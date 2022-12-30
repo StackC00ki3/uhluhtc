@@ -8,6 +8,8 @@ plugins {
 
 dependencies {
     implementation("com.charleskorn.kaml:kaml:0.49.0")
+    implementation("org.jsoup:jsoup:1.15.3")
+    "shadowLink"("org.jsoup:jsoup")
     "shadowLink"("com.charleskorn.kaml:kaml")
 }
 
