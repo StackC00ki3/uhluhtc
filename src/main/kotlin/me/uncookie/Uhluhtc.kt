@@ -3,15 +3,25 @@ package me.uncookie
 import com.charleskorn.kaml.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import me.uncookie.utils.Dice
+import me.uncookie.utils.PlotImageExport
 import net.mamoe.mirai.console.plugin.jvm.JvmPluginDescription
 import net.mamoe.mirai.console.plugin.jvm.KotlinPlugin
 import net.mamoe.mirai.event.events.GroupMessageEvent
 import net.mamoe.mirai.event.globalEventChannel
 import net.mamoe.mirai.message.data.PlainText
 import net.mamoe.mirai.message.data.content
+import net.mamoe.mirai.utils.ExternalResource.Companion.sendAsImageTo
 import net.mamoe.mirai.utils.ExternalResource.Companion.uploadAsImage
 import net.mamoe.mirai.utils.debug
 import net.mamoe.mirai.utils.info
+import org.jetbrains.letsPlot.geom.geomHLine
+import org.jetbrains.letsPlot.geom.geomLine
+import org.jetbrains.letsPlot.geom.geomText
+import org.jetbrains.letsPlot.intern.Feature
+import org.jetbrains.letsPlot.intern.toSpec
+import org.jetbrains.letsPlot.letsPlot
+import org.jetbrains.letsPlot.scale.scaleYContinuous
 import org.jsoup.HttpStatusException
 import org.jsoup.Jsoup
 import java.awt.Color
@@ -21,7 +31,6 @@ import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.InputStream
 import javax.imageio.ImageIO
-
 
 object Uhluhtc : KotlinPlugin(
     JvmPluginDescription(
@@ -846,6 +855,12 @@ object Uhluhtc : KotlinPlugin(
 
             //feat: query the monster
             monQuery()
+
+            //feat: caculate xdy
+            rngCalculator()
+
+            //feat: help
+            help()
         }
     }
 
@@ -874,7 +889,7 @@ object Uhluhtc : KotlinPlugin(
                     }
                     .size
 
-                if (count > 0){
+                if (count > 0) {
                     group.sendMessage(res.removeSuffix("\n"))
                 }
             }
@@ -882,8 +897,8 @@ object Uhluhtc : KotlinPlugin(
     }
 
     private suspend fun GroupMessageEvent.monNameTranslation() {
-        if (message.content.startsWith("翻译:") && this.message.content.length > 2) {
-            var fMsg = message.content.removePrefix("翻译:")
+        if (message.content.startsWith("翻译") && this.message.content.length > 3) {
+            var fMsg = message.content.removePrefix("翻译")
             monTranslation.forEach { (k, v) -> fMsg = fMsg.replace(k, v) }
             group.sendMessage(fMsg)
         }
@@ -995,6 +1010,79 @@ object Uhluhtc : KotlinPlugin(
         }
     }
 
+    private suspend fun GroupMessageEvent.rngCalculator() {
+        if (message.content.startsWith("比较") && this.message.content.length > 3) {
+            val fMsg = message.content.removePrefix("比较")
+            val cond = mutableListOf<String>()
+            val sum = mutableListOf<Int>()
+            val prob = mutableListOf<Double>()
+            val data = mapOf(
+                "图例 (均值 / 标准差)" to cond,
+                "面数和" to sum,
+                "概率" to prob
+            )
+            val meanLines = mutableListOf<Feature>()
+            Regex("([0-9]+)d([0-9]+)(\\+|-?)([0-9]*)").findAll(fMsg).forEach {
+                val d = Dice(it.groupValues[1].toInt(), it.groupValues[2].toInt())
+                d.prob.run {
+                    if (it.groupValues[3].isEmpty() || it.groupValues[4].isEmpty()) {
+                        sum += keys.toList()
+                        prob += values.toList()
+                    } else {
+                        sum += keys.map { k ->
+                            when (it.groupValues[3]) {
+                                "+" -> k + it.groupValues[4].toInt()
+                                "-" -> k - it.groupValues[4].toInt()
+                                else -> 0 //impossible
+                            }
+                        }
+                            .toList()
+                        prob += values.toList()
+                    }
+                    val name = it.groupValues[0]
+                    cond += List(size) { "$name (${d.fMean} / ${d.fSdeviation})" }
+                }
+                logger.info { d.prob.maxByOrNull { a -> a.value }.toString() }
+                meanLines += geomHLine(
+                    yintercept = d.prob.maxByOrNull { a -> a.value }?.value,
+                    linetype = "dashed"
+                ) + geomText(
+                    label = d.prob.maxByOrNull { a -> a.value }?.key.toString(),
+                    y = d.prob.maxByOrNull { a -> a.value }?.value!! + 0.002,
+                    x = d.mean,
+                    size = 6
+                ) + geomText(
+                    label = d.prob.maxByOrNull { a -> a.value }?.value.toString(),
+                    labelFormat = ".2%",
+                    y = d.prob.maxByOrNull { a -> a.value }?.value,
+                    x = 0,
+                    size = 5
+                )
+            }
+            var p = letsPlot(data) + geomLine {
+                x = "面数和"; y = "概率"; color = "图例 (均值 / 标准差)"
+            } + scaleYContinuous(format = ".2%")
+            meanLines.forEach { p += it }
+            //ggsave(p, "ok.html")
+            val inStream = PlotImageExport.buildImageFromRawSpecs(p.toSpec(), PlotImageExport.Format.PNG, 1.0, 72.0)
+            inStream.sendAsImageTo(group, "png")
+            withContext(Dispatchers.IO) {
+                inStream.close()
+            }
+        }
+    }
+
+    private suspend fun GroupMessageEvent.help() {
+        if (message.content == "卢克") {
+            group.sendMessage(
+                "功能：\n1.辅助龙龙: 查询怪物<中文> 发送怪物贴图 ; 查询怪物<英文> 在所有nh分支中搜索该怪物并发送可选列表\n" +
+                        "2.翻译消息中的怪物名称: 翻译<需要翻译的内容(可包含不是怪物名的内容)>\n" +
+                        "3.查询怪物详细信息： #<分支简称>?<英文怪兽名> （分支简称可用查询怪物<英文>来获取）\n" +
+                        "4.RNG骰子概率比较/计算器: 比较<若干个 xdy (如：2d12, 3d2)（用空格分隔）>"
+            )
+        }
+    }
+
     private fun genSymImage(sym: String, color: String): InputStream {
         val image = BufferedImage(13, 22, BufferedImage.TYPE_INT_RGB)
         val g = image.createGraphics()
@@ -1043,3 +1131,5 @@ object Uhluhtc : KotlinPlugin(
             .bodyStream()
     }
 }
+
+
